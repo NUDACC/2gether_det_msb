@@ -4,17 +4,17 @@
 # Edit the following variables to tailor
 # code to specific redcap project
 
-study_arm = "arm" # column name indicating study arm
-randomization_ready = "randomize"
-baseline_event = "Baseline"
+study_arm = "rand_cohort" # column name indicating study arm
+randomization_ready = "in_rand___1"
+# baseline_event = "Baseline"
 bal_covariates = c(
   # List covariate column names used to
   # compute balance
-  "age", "race", "gender", "disease_status"
+  "rand_race", "rand_gi", "rand_prep"
 )
-study_center = "center"
+# study_center = "center"
 
-min_n_algorithm <- 100 # Sample size required before starting adaptive randomization
+min_n_algorithm <- 5 # Sample size required before starting adaptive randomization
 
 ###------------------------------------###
 ###------------------------------------###
@@ -35,73 +35,41 @@ library(RCurl)
 args <- commandArgs(trailingOnly = TRUE)
 pl <- data.frame(pid = args[1], record = args[2], instrument = args[3])
 
-write.csv(pl, "args.csv")
+# write.csv(pl, "args.csv")
 
 
 
 ###---------------------------###
 ### Read in REDCap data
 ###---------------------------###
-token = TOKEN
+# use Sys.setevn(TOKEN = *REDCAP API TOKEN*)
+token = Sys.getenv("TOKEN")
 URL <- "https://redcap.nubic.northwestern.edu/redcap/api/"
 
-rc_db <- postForm(
-  uri=URL,
-  token=token,
-  content='record',
-  format='csv',
-  type='flat',
-  rawOrLabel='label',
-  #rawOrLabel='raw',
-  rawOrLabelHeaders='raw',
-  exportCheckboxLabel='false',
-  exportSurveyFields='false',
-  exportDataAccessGroups='false',
-  returnFormat='json'
+con <- redcapAPI::redcapConnection(
+  url = URL,
+  token = token
 )
-
-con <- textConnection(rc_db)
-data <- read.csv(con, stringsAsFactors = F)
-data[data == ""] <- NA
+data <- redcapAPI::exportRecords(con)
 
 saveRDS(data, paste0("data/redcap_db_", Sys.Date(), ".RDS"))
 
 
-###---------------------------###
-### Get baseline data
-###---------------------------###
-baseline_data <- data %>%
-  filter(
-    redcap_event_name == baseline_event,
-    consent == "I consent to be in this study." # NEED TO EDIT FOR DIFFERENT PROJECTS
-  ) %>%
-  mutate( # NEED TO EDIT FOR DIFFERENT PROJECTS
-    race = factor(
-      ifelse(race___2 == "Checked",
-             "Asian",
-             ifelse(race___3 == "Checked",
-                    "Black",
-                    ifelse(race___5 == "Checked",
-                           "White",
-                           "Other")))
-    ),
-    age = difftime(Sys.Date(), as.Date(dob), units = "weeks")/52.14,
-    gender = factor(gender),
-    disease_status = factor(disease_status)
-  )
 
 
 ###---------------------------###
 ### Separate by new/old units
 ###---------------------------###
 ###---New units are those that trigger the DET
-new_obs <- baseline_data %>%
-  filter(record_id %in% pl$record)
+new_obs <- data %>%
+  filter(record_id %in% pl$record) 
 
-old_obs <- baseline_data %>%
-  filter(!(record_id %in% pl$record))
+old_obs <- data %>%
+  filter( # Get data that is neither the person nor their partner
+    !(record_id %in% pl$record) &
+      !(record_id_p %in% pl$record))
 
-write.csv(new_obs, paste0("new_obs_", Sys.Date(), ".csv"))
+write.csv(new_obs, paste0("data/new_obs_", Sys.Date(), ".csv"))
 # write.csv(old_obs, paste0("old_obs_", Sys.Date(), ".csv"))
 
 ###---------------------------###
@@ -111,14 +79,22 @@ write.csv(new_obs, paste0("new_obs_", Sys.Date(), ".csv"))
 new_to_randomize <- new_obs %>%
   filter(
     is.na(get(study_arm)),
-    randomize == "Yes"
+    get(randomization_ready) == "Checked"
   )
+
+# Determine if we are randomizing a single participant or a couple
+single <- new_to_randomize$enrollment_group == "Dyad (Enrolled as Couple)"
+
+if(!single){
+  partner_data <- data %>% 
+    filter(record_id %in% new_to_randomize$record_id_p)
+}
 
 already_randomized <- data %>%
   filter(!is.na(get(study_arm)))
 
-write.csv(new_to_randomize, "ntr.csv")
-write.csv(already_randomized, "ar.csv")
+write.csv(new_to_randomize, "data/ntr.csv", row.names = F)
+write.csv(already_randomized, "data/ar.csv", row.names = F)
 
 if(nrow(new_to_randomize) > 0){
   write(
